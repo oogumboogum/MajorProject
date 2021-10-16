@@ -1,0 +1,196 @@
+from PyQt5.QtGui import QColor #Import necessary functions
+from qgis.PyQt import QtGui
+
+filepath = "Downloads/djibouti/" #CHANGE FILEPATH TO OWN
+
+#Add Satellite Imagery
+iface.addRasterLayer(filepath + 'Satellite.tif', '',)
+
+#Adding Djibouti Boundary 
+boundary = iface.addVectorLayer(filepath + 'Boundary.shp', '', 'ogr')#add boundary 
+boundary_renderer = boundary.renderer() #create renderer
+#Changing Symbology 
+symbol = boundary_renderer.symbol() #apply symbol to layer renderer
+symbol.setColor(QColor.fromRgb(0,0,0,0)) #set fill to transparent
+symbol.symbolLayer(0).setStrokeWidth(0.75)
+boundary.triggerRepaint() #repaint layer
+iface.layerTreeView().refreshLayerSymbology(boundary.id()) #refresh layer
+
+#Clipping Roads to Boundary
+processing.run('native:clip', { 'INPUT' : filepath + 'Roads.shp', 
+'OUTPUT' : filepath + 'Djibouti_Roads.shp', 
+'OVERLAY' : filepath + 'Boundary.shp' })
+#road = iface.addVectorLayer(filepath + 'Djibouti_Roads.shp', '', 'ogr') #Adding roads
+
+#Dissolve Roads
+processing.run('native:dissolve', {'FIELD' : [],
+'INPUT' : filepath + 'Djibouti_Roads.shp',
+'OUTPUT' : filepath + 'Dissolved_Roads.shp' })
+
+#Multipart to Singleparts
+processing.run('native:multiparttosingleparts', { 'INPUT' : filepath + 'Dissolved_Roads.shp', 
+'OUTPUT' : filepath + 'Merged Roads.shp' })
+roads = iface.addVectorLayer(filepath + 'Merged Roads.shp', '', 'ogr')
+
+#Changing Symbology
+road_renderer = roads.renderer() #Creater renderer
+symbol1 = QgsLineSymbol.createSimple({'line_style': 'solid', 'color': 'black'}) #Change roads to gray
+roads.renderer().setSymbol(symbol1) #Set symbol
+roads.triggerRepaint() #repaint layer 
+iface.layerTreeView().refreshLayerSymbology(roads.id()) #refresh layer
+
+#Finding Intersections Between Roads
+processing.run('native:lineintersections', { 'INPUT' : filepath + 'Merged Roads.shp', 
+'INPUT_FIELDS' : [], 
+'INTERSECT' : filepath + 'Merged Roads.shp', 
+'INTERSECT_FIELDS' : [], 'INTERSECT_FIELDS_PREFIX' : '', 
+'OUTPUT' : filepath + 'Intersections.shp' })
+
+#Deleting Duplicate Geometries 
+processing.run('native:deleteduplicategeometries', { 'INPUT' : filepath + 'Intersections.shp',
+'OUTPUT' : filepath + 'Road Intersections.shp' })
+
+#Reproject Layer to WGS84 UTM Zone 38N for Djibouti
+processing.run('native:reprojectlayer', { 'INPUT' : filepath + 'Road Intersections.shp', 
+'OPERATION' : '+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=utm +zone=38 +ellps=WGS84',
+'OUTPUT' : filepath + 'Reprojected Intersections.shp', 
+'TARGET_CRS' : QgsCoordinateReferenceSystem('EPSG:32638') })
+#reproject_inter = iface.addVectorLayer (filepath + 'Reprojected Intersections.shp', '', 'ogr')
+
+#Set Project CRS to same as layer 
+my_crs = QgsCoordinateReferenceSystem(32638) #WGS84 UTM Zone 38N
+QgsProject.instance().setCrs(my_crs) #Sets Project CrsNotSet
+
+#Create Grid
+processing.run('native:creategrid', { 'CRS' : QgsCoordinateReferenceSystem('EPSG:32638'),
+'EXTENT' : '155030.564700000,323711.912100000,1216475.095000000,1399048.931700000 [EPSG:32638]', 
+'HOVERLAY' : 0, 'HSPACING' : 1000, 
+'OUTPUT' : filepath + 'Grid.shp', 
+'TYPE' : 2, 'VOVERLAY' : 0, 'VSPACING' : 1000 })
+#grid = iface.addVectorLayer(filepath + 'Grid.shp', '', 'ogr')
+
+#Create Spatial Index to Boost Performance of Layer 
+processing.run('native:createspatialindex', 
+{ 'INPUT' : filepath + 'Grid.shp' })
+
+#Count Number of Points in Grid 
+processing.run('native:countpointsinpolygon',
+{ 'CLASSFIELD' : '', 'FIELD' : 'NUMPOINTS', #Contains the number of intersection points within each grid
+'OUTPUT' : filepath + 'Grid Count.shp',
+'POINTS' : filepath + 'Reprojected Intersections.shp', 
+'POLYGONS' : filepath + 'Grid.shp', 'WEIGHT' : '' })
+
+#Remove Grid Polygons with No Intersections 
+processing.run('native:extractbyattribute',
+{ 'FIELD' : 'NUMPOINTS', 'INPUT' : filepath + 'Grid Count.shp',
+'OPERATOR' : 2, 'OUTPUT' : filepath + 'Djibouti Grid Count.shp', 'VALUE' : '0' })
+
+#Clean Up Attribute Table 
+processing.run('native:refactorfields', { 'FIELDS_MAPPING' : [{'expression': '\"id\"','length': 20,'name': 'id','precision': 0,'type': 6},
+{'expression': '\"NUMPOINTS\"','length': 23,'name': 'intersection_density','precision': 15,'type': 6}],
+'INPUT' : filepath + 'Djibouti Grid Count.shp', 
+'OUTPUT' : filepath + 'Road Intersection Density.shp' })
+road_density = iface.addVectorLayer(filepath + 'Road Intersection Density.shp','', 'ogr')
+
+#Create Graduated Symbology 
+#Defines symbol graduation containing range label, range start and end value and color name 
+target_field = "intersecti"
+
+def graduated_symbol(): 
+    myRangeList= []
+    
+    symbol = QgsSymbol.defaultSymbol(road_density.geometryType())
+    symbol.setColor(QColor('#ADD8E6'))
+    myRange = QgsRendererRange(1,1, symbol, '1')
+    myRangeList.append(myRange)
+    
+    symbol = QgsSymbol.defaultSymbol(road_density.geometryType())
+    symbol.setColor(QColor('#0000cd'))
+    myRange = QgsRendererRange(1,3, symbol, '2 - 3')
+    myRangeList.append(myRange)
+    
+    symbol = QgsSymbol.defaultSymbol(road_density.geometryType())
+    symbol.setColor(QColor('#90ee90'))
+    myRange = QgsRendererRange(3,7, symbol, '4 - 7')
+    myRangeList.append(myRange)
+    
+    symbol = QgsSymbol.defaultSymbol(road_density.geometryType())
+    symbol.setColor(QColor('#3cb371'))
+    myRange = QgsRendererRange(7,20, symbol, '8 - 20')
+    myRangeList.append(myRange)
+    
+    symbol = QgsSymbol.defaultSymbol(road_density.geometryType())
+    symbol.setColor(QColor('#FFFF00'))
+    myRange = QgsRendererRange(20,35, symbol, '21-35')
+    myRangeList.append(myRange)
+    
+    symbol = QgsSymbol.defaultSymbol(road_density.geometryType())
+    symbol.setColor(QColor('#FFA500'))
+    myRange = QgsRendererRange(35,200, symbol, '36 - 200')
+    myRangeList.append(myRange)
+    
+    symbol = QgsSymbol.defaultSymbol(road_density.geometryType())
+    symbol.setColor(QColor('#FF0000'))
+    myRange = QgsRendererRange(200, 556, symbol, '201 - 556')
+    myRangeList.append(myRange)
+    
+    myRenderer = QgsGraduatedSymbolRenderer(target_field, myRangeList)  
+    myRenderer.setMode(QgsGraduatedSymbolRenderer.Custom)               
+
+    road_density.setRenderer(myRenderer)                                  
+
+graduated_symbol()
+
+#CreatePrinted Layout
+project = QgsProject.instance()#Create Project    
+manager = project.layoutManager()#Holds layout manager  
+layout = QgsPrintLayout(project)#Create layout   
+layoutName = "PrintLayout"
+
+#initialise default settings for blank print layout canvas
+layout.initializeDefaults()  
+    
+layout.setName(layoutName) #Set name
+manager.addLayout(layout) #Add layout 
+
+map = QgsLayoutItemMap(layout) #Add map to print layout 
+layout.addLayoutItem(map)
+map.setRect(250, 250, 250, 250) #Set rectangle 
+#defines map extent using map coordinates
+rectangle = QgsRectangle(208143, 1213599, 319164, 1292366)
+map.setExtent(rectangle) #Set extent 
+layout.addLayoutItem(map)
+
+#Create Legend 
+legend = QgsLayoutItemLegend(layout)
+legend.setTitle("Legend") #Title of legend
+layout.addLayoutItem(legend)
+legend.attemptMove(QgsLayoutPoint(230, 90, QgsUnitTypes.LayoutMillimeters)) #Position Legend
+
+#Add Title
+title = QgsLayoutItemLabel(layout)
+title.setText("Number of Road Intersections in Djibouti") #Title
+title.setFont(QFont("Arial", 28)) #Font
+title.adjustSizeToText()
+layout.addLayoutItem(title)
+title.attemptMove(QgsLayoutPoint(10, 180, QgsUnitTypes.LayoutMillimeters)) #Position Title
+
+#Add Scalebar
+scalebar = QgsLayoutItemScaleBar(layout)
+scalebar.setStyle('Line Ticks Up')
+scalebar.setUnits(QgsUnitTypes.DistanceKilometers) #Set Units
+scalebar.setNumberOfSegments(4) #Set number of segments
+scalebar.setNumberOfSegmentsLeft(0)
+scalebar.setUnitsPerSegment(7) #Set number of kilometeres in each segment 
+scalebar.setLinkedMap(map)
+scalebar.setUnitLabel('km') #Unit
+scalebar.setFont(QFont('Arial', 14)) #Font
+scalebar.update()
+layout.addLayoutItem(scalebar)
+scalebar.attemptMove(QgsLayoutPoint(200, 180, QgsUnitTypes.LayoutMillimeters)) #Position scalebar
+
+#Export Layout as PDF
+exporter = QgsLayoutExporter(layout) 
+exporter.exportToPdf(filepath + "layout.pdf", QgsLayoutExporter.PdfExportSettings())
+    
+    
